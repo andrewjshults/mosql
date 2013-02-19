@@ -185,7 +185,11 @@ module MoSQL
     def initial_import
       @schemamap.create_schema(@sql.db, true)
 
-      start_ts = @mongo['local']['oplog.rs'].find_one({}, {:sort => [['$natural', -1]]})['ts']
+      begin
+        start_ts = @mongo['local']['oplog.rs'].find_one({}, {:sort => [['$natural', -1]]})['ts']
+      rescue
+        start_ts = BSON::Timestamp.new(0, 0)
+      end
 
       want_dbs = @schemamap.all_mongo_dbs & @mongo.database_names
       want_dbs.each do |dbname|
