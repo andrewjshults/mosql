@@ -86,6 +86,10 @@ module MoSQL
         opts.on("--reimport", "Force a data re-import") do
           @options[:reimport] = true
         end
+
+        opts.on("--no-drop-tables", "Don't drop the table if it exists during the initial import") do
+          @options[:no_drop_tables] = true
+        end
       end
 
       optparse.parse!(@args)
@@ -183,7 +187,7 @@ module MoSQL
     end
 
     def initial_import
-      @schemamap.create_schema(@sql.db, true)
+      @schemamap.create_schema(@sql.db, !options[:no_drop_tables])
 
       begin
         start_ts = @mongo['local']['oplog.rs'].find_one({}, {:sort => [['$natural', -1]]})['ts']
@@ -211,7 +215,7 @@ module MoSQL
       count = 0
       batch = []
       table = @sql.table_for_ns(ns)
-      table.truncate
+      table.truncate unless options[:no_drop_tables]
 
       start    = Time.now
       sql_time = 0
@@ -253,11 +257,12 @@ module MoSQL
     end
 
     def sync_object(ns, _id)
+      sqlid = @sql.transform_one_ns(ns, { '_id' => _id })['_id']
       obj = collection_for_ns(ns).find_one({:_id => _id})
       if obj
         @sql.upsert_ns(ns, obj)
       else
-        @sql.table_for_ns(ns).where(:_id => _id).delete()
+        @sql.table_for_ns(ns).where(:_id => sqlid).delete()
       end
     end
 
@@ -292,14 +297,20 @@ module MoSQL
           log.debug("resync #{ns}: #{selector['_id']} (update was: #{update.inspect})")
           sync_object(ns, selector['_id'])
         else
-          log.debug("upsert #{ns}: _id=#{update['_id']}")
+          log.debug("upsert #{ns}: _id=#{selector['_id']}")
+
+          # The update operation replaces the existing object, but
+          # preserves its _id field, so grab the _id off of the
+          # 'query' field -- it's not guaranteed to be present on the
+          # update.
+          update = { '_id' => selector['_id'] }.merge(update)
           @sql.upsert_ns(ns, update)
         end
       when 'd'
         if options[:ignore_delete]
           log.debug("Ignoring delete op on #{ns} as instructed.")
         else
-          @sql.table_for_ns(ns).where(:_id => op['o']['_id']).delete
+          @sql.delete_ns(ns, op['o'])
         end
       else
         log.info("Skipping unknown op #{op.inspect}")
